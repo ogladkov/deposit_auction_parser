@@ -5,16 +5,10 @@ from warnings import filterwarnings
 filterwarnings('ignore')
 import datetime as dt
 from time import sleep
-from selenium import webdriver
-from selenium.webdriver.firefox.options import Options
 
+### Краснодар
 
-print('Начало работы...')
-
-
-# ### Краснодар
 def parse_minfinkubani_ru():
-    print('Скачиваю аукционы МинФина Кубани...')
     domain = 'https://minfinkubani.ru'
     url = 'https://minfinkubani.ru/deposit_funds/selection_parameters.php'
     
@@ -37,13 +31,12 @@ def parse_minfinkubani_ru():
     
     return parsed
 
-
 parsed_minfinkubani = parse_minfinkubani_ru()
+parsed_minfinkubani
 
+### Банк России
 
-# ### Банк России
 def parse_cbr_ru():
-    print('Скачиваю аукционы Банка России...')
     url = 'https://cbr.ru/DKP/DepoParams/'
     df = pd.read_html(url)[0].iloc[:, 0]
     tod = dt.date.today().strftime("%d.%m.%Y")
@@ -52,9 +45,10 @@ def parse_cbr_ru():
     return df
 
 parsed_cbr = parse_cbr_ru()
+parsed_cbr
 
+### Moex
 
-# ### Moex
 def month2num(month):
     month_dict = {
         'января': 1,
@@ -72,10 +66,7 @@ def month2num(month):
     }
     return month_dict[month]
 
-
 def moex_parser(kwords):
-    print('Скачиваю аукционы Фед. казначейства и ПФР...')
-    
     domain = 'https://www.moex.com/'
     url = 'https://www.moex.com/ru/news/?ncat=114'
     
@@ -93,32 +84,37 @@ def moex_parser(kwords):
             if w not in text:
                 break
         else:
-            action_date = p.text.lower().split('состоится')[0]
-            action_date =                f'{action_date.split()[0]}.{month2num(action_date.split()[1])}.{action_date.split()[2]}'
-            action_date = dt.datetime.strptime(action_date, '%d.%m.%Y')
-            if action_date >= dt.datetime.today():
-                parsed.append([dt.datetime.strftime(action_date, '%d.%m.%Y'),
-                               full_url
-                              ])
+            try:
+                action_date = p.text.lower().split('состоится')[0]
+                action_date = f'{action_date.split()[0]}.{month2num(action_date.split()[1])}.{action_date.split()[2]}'
+                action_date = dt.datetime.strptime(action_date, '%d.%m.%Y')
+                if action_date >= dt.datetime.today():
+                    parsed.append([dt.datetime.strftime(action_date, '%d.%m.%Y'),
+                                   full_url
+                                  ])
+            except KeyError:
+                continue
 
     parsed = pd.DataFrame({'date':[x[0] for x in parsed],
                            'url':[x[1] for x in parsed]})
     
     return parsed
 
-
 words_fedkazna = ['федеральн', 'казначей']
 parsed_fedkazna = moex_parser(words_fedkazna)
-
+parsed_fedkazna
 
 words_pfr = ['пенсион', 'фонд']
 parsed_pfr = moex_parser(words_pfr)
+parsed_pfr
 
+###  Комитет финансов СПБ
 
-# ###  Комитет финансов СПБ
+from selenium import webdriver
+from selenium.webdriver.firefox.options import Options
+from time import sleep
+
 def com_spb_parser(kwords):
-    print('Скачиваю аукционы Комитета Финансов СПБ...')
-    
     options = Options()
     options.headless = True
     driver = webdriver.Firefox(options=options)
@@ -154,13 +150,11 @@ def com_spb_parser(kwords):
 
     return parsed
 
-
 words_comspb = ['провед', 'депозит']
 parsed_comspb = com_spb_parser(words_fedkazna)
-
+parsed_comspb
 
 ### Aggregation
-print('Совмещаю таблицы...')
 
 df = parsed_cbr.append(parsed_minfinkubani)
 df = df.append(parsed_fedkazna)
@@ -168,9 +162,63 @@ df = df.append(parsed_pfr)
 df = df.append(parsed_comspb)
 
 df['date'] = pd.to_datetime(df['date'], format='%d.%m.%Y')
-df.sort_values('date')
+df = df.sort_values('date')
+df
 
-# ### Writing
-print('Файл успешно записан...')
+### Writing
+
 df.to_excel('parsed_deposit_auctions.xlsx')
 
+### Mailing
+
+from smtplib import SMTP_SSL
+from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
+from email import encoders
+import os
+
+emails_list = []
+
+with open('emails_list.txt', 'r') as elf:
+    emails_list = elf.readlines()
+emails_list = [e.strip('\n') for e in emails_list]
+
+def send(address_to):
+    '''
+    Send generated files by email
+    '''
+    fname = 'parsed_deposit_auctions.xlsx'
+
+    print('Формируется email...')
+    address = "forrncb@yandex.ru"
+
+    # Compose message
+    msg = MIMEMultipart()
+    msg['From'] = address
+    msg['To'] = address_to
+    msg['Subject'] = 'Предстоящие аукционы'
+
+    # Add attachment
+    attachment = MIMEBase('application', 'octet-stream')
+    with open(fname, 'rb') as file:
+        attachment.set_payload(file.read())
+    encoders.encode_base64(attachment)
+    attachment.add_header('Content-Disposition',
+                          'attachment',
+                          filename=os.path.basename(fname))
+    msg.attach(attachment)
+
+    # Send mail
+    with open('sendmail_pswd', 'r') as pf:
+        pswd = pf.readline()
+    
+    smtp = SMTP_SSL('smtp.yandex.ru')
+    smtp.login(address, pswd)
+    smtp.sendmail(address, address_to, msg.as_string())
+    smtp.quit()
+    print('Отправлено...')
+
+send(emails_list[0])
+    
+if df.shape[0]:
+    send(emails_list[1:])
